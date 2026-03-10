@@ -172,7 +172,18 @@
       return { error: 'no_active_chat', message: 'No chat is open. Please open a WhatsApp group and try again.' };
     }
 
-    if (!activeChat.isGroup) {
+    // Detect group chats robustly:
+    //   1. isGroup / isGroupChat boolean flag (not always set)
+    //   2. JID server field: groups always end in @g.us
+    var chatIdForCheck = activeChat.id;
+    var serverForCheck = (chatIdForCheck && chatIdForCheck.server)
+      ? chatIdForCheck.server
+      : ((chatIdForCheck && chatIdForCheck._serialized)
+          ? chatIdForCheck._serialized.split('@')[1]
+          : '');
+    var isGroup = activeChat.isGroup || activeChat.isGroupChat || serverForCheck === 'g.us';
+
+    if (!isGroup) {
       return { error: 'not_group', message: 'The open chat is not a group. Please open a group chat and try again.' };
     }
 
