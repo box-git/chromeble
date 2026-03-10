@@ -12,9 +12,17 @@
 (function () {
   'use strict';
 
-  // Guard against double-injection
-  if (window.__waExporterInjected) return;
-  window.__waExporterInjected = true;
+  // Version-based guard: bump when the script changes so extension updates
+  // take effect without requiring the user to refresh the WhatsApp Web tab.
+  var SCRIPT_VERSION = 'v5';
+  if (window.__waExporterVersion === SCRIPT_VERSION) return;
+  window.__waExporterVersion = SCRIPT_VERSION;
+
+  // Remove the previous version's listener to avoid stacking handlers.
+  if (typeof window.__waExporterHandler === 'function') {
+    window.removeEventListener('message', window.__waExporterHandler);
+    window.__waExporterHandler = null;
+  }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -36,7 +44,6 @@
   }
 
   // Build a minimal Store by trying known WhatsApp Web module names.
-  // Module names follow WAWeb* convention and are tried in priority order.
   function buildStore() {
     var store = {
       Chat: null,
@@ -113,14 +120,44 @@
     }
   }
 
-  // Convert a WhatsApp WID (Jabber ID) to a E.164-style phone number string.
-  // Standard JID: "972501234567@c.us" → "+972501234567"
-  // LID format:   "XXXXXXXXXX@lid"   → resolved via LidUtils (async)
+  // Determine if a chat object represents a WhatsApp group.
+  // Groups always have a JID ending in @g.us. The isGroup boolean
+  // is not reliably present on all WhatsApp Web versions.
+  function detectIsGroup(chat) {
+    if (chat.isGroup === true || chat.isGroupChat === true) return true;
+
+    // Also check: only groups have groupMetadata / participants
+    if (chat.groupMetadata || chat.participants) return true;
+
+    // Inspect the JID — works whether id is an object or a plain string
+    var id = chat.id;
+    if (!id) return false;
+
+    if (typeof id === 'string') {
+      return id.indexOf('@g.us') !== -1;
+    }
+
+    // WID object
+    if (id.server === 'g.us') return true;
+    var serialized = id._serialized || '';
+    return serialized.indexOf('@g.us') !== -1;
+  }
+
+  // Serialise a WID to its full JID string
+  function serialiseId(id) {
+    if (!id) return '';
+    if (typeof id === 'string') return id;
+    if (id._serialized) return id._serialized;
+    if (id.user && id.server) return id.user + '@' + id.server;
+    return String(id);
+  }
+
+  // Extract phone number from a JID/WID (non-LID)
   function jidToPhone(pid) {
     if (!pid) return '';
     var user = (typeof pid === 'string') ? pid.split('@')[0] : (pid.user || '');
     var server = (typeof pid === 'string') ? (pid.split('@')[1] || '') : (pid.server || '');
-    if (server === 'lid') return ''; // Will be resolved separately
+    if (server === 'lid') return '';
     return user ? ('+' + user) : '';
   }
 
@@ -165,31 +202,23 @@
       activeChat = store.Chat.find(function (c) { return c.active; });
     }
     if (!activeChat && store.Chat.models) {
-      activeChat = store.Chat.models.find(function (c) { return c.active; });
+      var models = Array.isArray(store.Chat.models)
+        ? store.Chat.models
+        : (typeof store.Chat.models.find === 'function' ? store.Chat.models : []);
+      activeChat = models.find ? models.find(function (c) { return c.active; }) : null;
     }
 
     if (!activeChat) {
       return { error: 'no_active_chat', message: 'No chat is open. Please open a WhatsApp group and try again.' };
     }
 
-    // Detect group chats robustly:
-    //   1. isGroup / isGroupChat boolean flag (not always set)
-    //   2. JID server field: groups always end in @g.us
-    var chatIdForCheck = activeChat.id;
-    var serverForCheck = (chatIdForCheck && chatIdForCheck.server)
-      ? chatIdForCheck.server
-      : ((chatIdForCheck && chatIdForCheck._serialized)
-          ? chatIdForCheck._serialized.split('@')[1]
-          : '');
-    var isGroup = activeChat.isGroup || activeChat.isGroupChat || serverForCheck === 'g.us';
-
-    if (!isGroup) {
+    if (!detectIsGroup(activeChat)) {
       return { error: 'not_group', message: 'The open chat is not a group. Please open a group chat and try again.' };
     }
 
     var groupName = activeChat.name || activeChat.formattedTitle || activeChat.subject || 'Group';
     var chatId = activeChat.id;
-    var chatIdStr = (chatId && chatId._serialized) ? chatId._serialized : String(chatId || '');
+    var chatIdStr = serialiseId(chatId);
 
     // Get group metadata
     var meta = null;
@@ -203,7 +232,7 @@
     }
 
     // Try to trigger a server fetch if participants are missing
-    if ((!meta || !meta.participants || getParticipantArray(meta.participants).length === 0)) {
+    if (!meta || !meta.participants || getParticipantArray(meta.participants).length === 0) {
       var queryBridge = tryRequire('WAWebGroupQueryBridge');
       if (queryBridge && typeof queryBridge.queryGroupMetadata === 'function') {
         try {
@@ -227,7 +256,7 @@
     for (var i = 0; i < participants.length; i++) {
       var p = participants[i];
       var pid = p.id;
-      var pidStr = (pid && pid._serialized) ? pid._serialized : String(pid || '');
+      var pidStr = serialiseId(pid);
       var server = (pid && pid.server) ? pid.server : (pidStr.split('@')[1] || '');
 
       var phone = '';
@@ -269,7 +298,7 @@
 
   // ── Message listener ─────────────────────────────────────────────────────
 
-  window.addEventListener('message', function (event) {
+  window.__waExporterHandler = function (event) {
     if (event.source !== window) return;
     if (!event.data || event.data.type !== 'WA_EXPORTER_EXTRACT') return;
 
@@ -283,5 +312,7 @@
           payload: { error: 'exception', message: err.message || String(err) },
         }, '*');
       });
-  });
+  };
+
+  window.addEventListener('message', window.__waExporterHandler);
 })();
