@@ -16,11 +16,22 @@ chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
     return false;
   }
 
+  // Inject content.js (ISOLATED world) first, then injected.js (MAIN world).
+  // This ensures content.js listener is registered even when the tab was open
+  // before the extension was installed — the manifest auto-injection only fires
+  // for tabs opened after the extension loads.
   chrome.scripting
     .executeScript({
       target: { tabId: tabId },
-      files: ['injected.js'],
-      world: 'MAIN',
+      files: ['content.js'],
+      world: 'ISOLATED',
+    })
+    .then(function () {
+      return chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        files: ['injected.js'],
+        world: 'MAIN',
+      });
     })
     .then(function () {
       sendResponse({ ok: true });

@@ -13,6 +13,11 @@
 (function () {
   'use strict';
 
+  // Guard against double-registration when background.js re-injects this script
+  // into a tab that already received it via the manifest content_scripts entry.
+  if (window.__waExporterContentInjected) return;
+  window.__waExporterContentInjected = true;
+
   chrome.runtime.onMessage.addListener(function (message, _sender, sendResponse) {
     if (message.type !== 'EXTRACT_CONTACTS') return false;
 
