@@ -1,38 +1,44 @@
 /**
- * popup.js – Popup logic for the WhatsApp Contacts Exporter extension.
- * Handles UI state, communicates with the content script, and generates CSV.
+ * popup.js – Orchestrates the full export flow.
+ *
+ * Flow:
+ *  1. Validate active tab is web.whatsapp.com
+ *  2. Ask background.js to inject injected.js into MAIN world
+ *  3. Wait briefly for the listener to register
+ *  4. Tell content.js to trigger extraction
+ *  5. Receive contacts, render preview, enable CSV download
  */
 
 (function () {
   'use strict';
 
-  let extractedContacts = null;
-  let extractedGroupName = null;
+  var extractedContacts = null;
+  var extractedGroupName = null;
 
-  // UI elements
-  const btnExport = document.getElementById('btn-export');
-  const btnDownload = document.getElementById('btn-download');
-  const statusIdle = document.getElementById('status-idle');
-  const statusLoading = document.getElementById('status-loading');
-  const statusSuccess = document.getElementById('status-success');
-  const statusError = document.getElementById('status-error');
-  const groupNameEl = document.getElementById('group-name');
-  const contactCountEl = document.getElementById('contact-count');
-  const errorMessageEl = document.getElementById('error-message');
-  const preview = document.getElementById('preview');
-  const previewList = document.getElementById('preview-list');
-  const previewCount = document.getElementById('preview-count');
+  var btnExport   = document.getElementById('btn-export');
+  var btnDownload = document.getElementById('btn-download');
+  var statusIdle    = document.getElementById('status-idle');
+  var statusLoading = document.getElementById('status-loading');
+  var statusSuccess = document.getElementById('status-success');
+  var statusError   = document.getElementById('status-error');
+  var groupNameEl   = document.getElementById('group-name');
+  var contactCountEl = document.getElementById('contact-count');
+  var errorMessageEl = document.getElementById('error-message');
+  var preview     = document.getElementById('preview');
+  var previewList = document.getElementById('preview-list');
+  var previewCount = document.getElementById('preview-count');
+
+  // ── UI helpers ─────────────────────────────────────────────────────────
 
   function showStatus(name) {
     statusIdle.classList.add('hidden');
     statusLoading.classList.add('hidden');
     statusSuccess.classList.add('hidden');
     statusError.classList.add('hidden');
-
-    if (name === 'idle') statusIdle.classList.remove('hidden');
-    else if (name === 'loading') statusLoading.classList.remove('hidden');
-    else if (name === 'success') statusSuccess.classList.remove('hidden');
-    else if (name === 'error') statusError.classList.remove('hidden');
+    if (name === 'idle')    statusIdle.classList.remove('hidden');
+    if (name === 'loading') statusLoading.classList.remove('hidden');
+    if (name === 'success') statusSuccess.classList.remove('hidden');
+    if (name === 'error')   statusError.classList.remove('hidden');
   }
 
   function showError(message) {
@@ -41,6 +47,7 @@
     btnExport.classList.remove('hidden');
     btnDownload.classList.add('hidden');
     preview.classList.add('hidden');
+    btnExport.disabled = false;
   }
 
   function showSuccess(groupName, contacts) {
@@ -53,11 +60,11 @@
   }
 
   function renderPreview(contacts) {
-    const max = 5;
+    var max = 5;
     previewList.innerHTML = '';
 
     contacts.slice(0, max).forEach(function (c) {
-      const item = document.createElement('div');
+      var item = document.createElement('div');
       item.className = 'preview-item';
       item.innerHTML =
         '<span class="preview-name">' + escapeHtml(c.name) + '</span>' +
@@ -67,7 +74,7 @@
     });
 
     if (contacts.length > max) {
-      const more = document.createElement('div');
+      var more = document.createElement('div');
       more.className = 'preview-more';
       more.textContent = '+ עוד ' + (contacts.length - max) + ' אנשי קשר...';
       previewList.appendChild(more);
@@ -78,123 +85,135 @@
   }
 
   function escapeHtml(str) {
-    return String(str)
+    return String(str || '')
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
   }
 
-  function generateCsv(contacts) {
-    const BOM = '\uFEFF'; // UTF-8 BOM for Hebrew support in Excel
-    const header = ['Name', 'Phone', 'IsAdmin'];
-    const rows = contacts.map(function (c) {
-      return [
-        csvEscape(c.name),
-        csvEscape(c.phone),
-        c.isAdmin ? 'true' : 'false',
-      ];
-    });
-
-    const lines = [header.join(',')].concat(
-      rows.map(function (r) { return r.join(','); })
-    );
-
-    return BOM + lines.join('\r\n');
-  }
+  // ── CSV helpers ────────────────────────────────────────────────────────
 
   function csvEscape(value) {
-    const str = String(value);
-    // Wrap in quotes if contains comma, quote, or newline
-    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+    var str = String(value == null ? '' : value);
+    if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
       return '"' + str.replace(/"/g, '""') + '"';
     }
     return str;
   }
 
-  function downloadCsv(csvContent, filename) {
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    link.style.display = 'none';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  function generateCsv(contacts) {
+    var BOM = '\uFEFF'; // UTF-8 BOM: ensures Excel opens Hebrew names correctly
+    var header = ['Name', 'Phone', 'IsAdmin'];
+    var rows = contacts.map(function (c) {
+      return [csvEscape(c.name), csvEscape(c.phone), c.isAdmin ? 'true' : 'false'];
+    });
+    var lines = [header.join(',')].concat(rows.map(function (r) { return r.join(','); }));
+    return BOM + lines.join('\r\n');
+  }
+
+  function datestamp() {
+    var d = new Date();
+    var pad = function (n) { return n.toString().padStart(2, '0'); };
+    return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate());
   }
 
   function sanitizeFilename(name) {
-    return (name || 'whatsapp-contacts')
+    return (name || 'whatsapp-group')
       .replace(/[^\w\u0590-\u05FF\s-]/g, '')
       .trim()
       .replace(/\s+/g, '_')
       .substring(0, 50);
   }
 
-  // Handle Export button click – fetch contacts from WhatsApp Web
+  function downloadCsv(csvContent, groupName) {
+    var filename = sanitizeFilename(groupName) + '_contacts_' + datestamp() + '.csv';
+    var blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  // ── Export flow ────────────────────────────────────────────────────────
+
   btnExport.addEventListener('click', function () {
     btnExport.disabled = true;
+    extractedContacts = null;
     showStatus('loading');
     preview.classList.add('hidden');
-    extractedContacts = null;
 
     chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-      const tab = tabs && tabs[0];
+      var tab = tabs && tabs[0];
 
       if (!tab) {
         showError('לא נמצא טאב פעיל.');
-        btnExport.disabled = false;
         return;
       }
 
       if (!tab.url || !tab.url.includes('web.whatsapp.com')) {
-        showError('התוסף עובד רק על web.whatsapp.com. פתח את WhatsApp Web ונסה שוב.');
-        btnExport.disabled = false;
+        showError('התוסף עובד רק על web.whatsapp.com.\nפתח את WhatsApp Web ונסה שוב.');
         return;
       }
 
-      chrome.tabs.sendMessage(tab.id, { type: 'EXTRACT_CONTACTS' }, function (response) {
-        btnExport.disabled = false;
-
+      // Step 1: Inject injected.js into MAIN world via background service worker
+      chrome.runtime.sendMessage({ type: 'INJECT_MAIN_WORLD', tabId: tab.id }, function (injectResp) {
         if (chrome.runtime.lastError) {
-          showError('שגיאת תקשורת: ' + chrome.runtime.lastError.message + '. רענן את הדף ונסה שוב.');
+          showError('שגיאת הזרקה: ' + chrome.runtime.lastError.message);
+          return;
+        }
+        if (!injectResp || !injectResp.ok) {
+          showError('לא הצלחנו להזריק לדף: ' + (injectResp && injectResp.error ? injectResp.error : 'שגיאה לא ידועה'));
           return;
         }
 
-        if (!response) {
-          showError('לא התקבלה תשובה מהדף. רענן את הדף ונסה שוב.');
-          return;
-        }
+        // Step 2: Small delay to let injected.js register its message listener
+        setTimeout(function () {
+          // Step 3: Trigger extraction via content.js bridge
+          chrome.tabs.sendMessage(tab.id, { type: 'EXTRACT_CONTACTS' }, function (response) {
+            if (chrome.runtime.lastError) {
+              showError('שגיאת תקשורת: ' + chrome.runtime.lastError.message + '\nרענן את הדף ונסה שוב.');
+              return;
+            }
 
-        if (response.error) {
-          showError(response.message || 'שגיאה לא ידועה.');
-          return;
-        }
+            if (!response) {
+              showError('לא התקבלה תשובה מהדף. רענן ונסה שוב.');
+              return;
+            }
 
-        if (!response.contacts || response.contacts.length === 0) {
-          showError('לא נמצאו אנשי קשר בקבוצה.');
-          return;
-        }
+            if (response.error) {
+              showError(response.message || 'שגיאה לא ידועה.');
+              return;
+            }
 
-        extractedContacts = response.contacts;
-        extractedGroupName = response.groupName || 'קבוצה';
-        showSuccess(extractedGroupName, extractedContacts);
+            if (!response.contacts || response.contacts.length === 0) {
+              showError('לא נמצאו אנשי קשר בקבוצה.');
+              return;
+            }
+
+            extractedContacts = response.contacts;
+            extractedGroupName = response.groupName || 'קבוצה';
+            showSuccess(extractedGroupName, extractedContacts);
+          });
+        }, 200);
       });
     });
   });
 
-  // Handle Download button click – generate and download CSV
+  // ── Download ───────────────────────────────────────────────────────────
+
   btnDownload.addEventListener('click', function () {
     if (!extractedContacts || extractedContacts.length === 0) {
       showError('אין נתונים להורדה. לחץ על "ייצא CSV" תחילה.');
       return;
     }
-
-    const csv = generateCsv(extractedContacts);
-    const filename = sanitizeFilename(extractedGroupName) + '_contacts.csv';
-    downloadCsv(csv, filename);
+    var csv = generateCsv(extractedContacts);
+    downloadCsv(csv, extractedGroupName);
   });
 
   // Initial state

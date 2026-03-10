@@ -1,72 +1,40 @@
 /**
- * content.js – Runs in the isolated world of the WhatsApp Web page.
- * Injects injected.js into the page context and bridges messages
- * between the popup and the page-context script.
+ * content.js – Runs in the ISOLATED world of web.whatsapp.com.
+ *
+ * Pure message bridge between:
+ *   - popup.js (via chrome.runtime messages)
+ *   - injected.js (via window.postMessage in MAIN world)
+ *
+ * injected.js is injected into the MAIN world by background.js using
+ * chrome.scripting.executeScript, NOT by this script. This is the correct
+ * MV3 approach that avoids CSP issues and isolated-world restrictions.
  */
 
 (function () {
   'use strict';
 
-  let injected = false;
-
-  function injectScript() {
-    if (injected) return;
-    injected = true;
-
-    const script = document.createElement('script');
-    script.src = chrome.runtime.getURL('injected.js');
-    script.onload = function () {
-      script.remove();
-    };
-    (document.head || document.documentElement).appendChild(script);
-  }
-
-  // Inject on load
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', injectScript);
-  } else {
-    injectScript();
-  }
-
-  // Listen for messages from the popup
   chrome.runtime.onMessage.addListener(function (message, _sender, sendResponse) {
     if (message.type !== 'EXTRACT_CONTACTS') return false;
 
-    // Check if WhatsApp Web UI is loaded
-    const waLoaded =
-      document.querySelector('[data-testid="chat-list"]') ||
-      document.querySelector('#app .two') ||
-      document.querySelector('[data-testid="default-user"]') ||
-      document.getElementById('app');
+    // Forward the trigger to injected.js (MAIN world) via postMessage
+    window.postMessage({ type: 'WA_EXPORTER_EXTRACT' }, '*');
 
-    if (!waLoaded) {
-      sendResponse({ error: 'wa_not_loaded', message: 'WhatsApp Web טרם נטען. המתן לטעינה המלאה ונסה שוב.' });
-      return false;
-    }
-
-    // Make sure script is injected
-    injectScript();
-
-    // One-time listener for the result from injected.js
-    function onPageMessage(event) {
+    // Wait for the response from injected.js
+    function onResult(event) {
       if (event.source !== window) return;
-      if (!event.data || event.data.type !== 'WA_CONTACTS_RESULT') return;
-
-      window.removeEventListener('message', onPageMessage);
+      if (!event.data || event.data.type !== 'WA_EXPORTER_RESULT') return;
+      window.removeEventListener('message', onResult);
       sendResponse(event.data.payload);
     }
 
-    window.addEventListener('message', onPageMessage);
+    window.addEventListener('message', onResult);
 
-    // Trigger extraction in page context
-    window.postMessage({ type: 'WA_EXTRACT_CONTACTS' }, '*');
-
-    // Timeout after 10 seconds
+    // Timeout safety: 15 seconds
     setTimeout(function () {
-      window.removeEventListener('message', onPageMessage);
-      sendResponse({ error: 'timeout', message: 'הבקשה פג זמן. נסה שוב.' });
-    }, 10000);
+      window.removeEventListener('message', onResult);
+      sendResponse({ error: 'timeout', message: 'Request timed out. Please try again.' });
+    }, 15000);
 
-    return true; // Keep message channel open for async response
+    return true; // Keep message channel open for async sendResponse
   });
 })();

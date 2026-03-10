@@ -3,8 +3,11 @@
   "name": "WhatsApp Contacts Exporter",
   "version": "1.0",
   "description": "Export WhatsApp group contacts to CSV",
-  "permissions": ["activeTab"],
+  "permissions": ["activeTab", "scripting"],
   "host_permissions": ["https://web.whatsapp.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
@@ -17,13 +20,8 @@
     {
       "matches": ["https://web.whatsapp.com/*"],
       "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": ["injected.js"],
-      "matches": ["https://web.whatsapp.com/*"]
+      "run_at": "document_idle",
+      "world": "ISOLATED"
     }
   ],
   "icons": {
